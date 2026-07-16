@@ -1,11 +1,9 @@
 mod app;
 mod config;
 mod error;
+mod features;
 mod i18n;
-mod migrations;
-mod model;
-mod pages;
-mod services;
+mod shared;
 
 use cosmic::cosmic_config::CosmicConfigEntry;
 pub use error::*;
@@ -22,7 +20,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use crate::{
     app::AppModel,
     config::{AppConfig, CONFIG_VERSION},
-    services::store::Store,
+    shared::store::Store,
 };
 
 pub fn main() -> Result<()> {
@@ -54,10 +52,15 @@ pub fn main() -> Result<()> {
 
     let new_base_dir = project.data_dir();
 
-    migrations::migrate(old_base_dir, new_base_dir)?;
+    shared::store::migrations::migrate(old_base_dir, new_base_dir)?;
 
     // Store is used for persistent storage of tasks and app state.
     let store = Store::open(project.data_dir())?;
+
+    // Ensure the task state registry exists, seeding the built-in states on first run.
+    if let Err(err) = store.states().load_all() {
+        tracing::error!("Error loading task states: {err}");
+    }
 
     tracing::info!("Project data directory: {:?}", project.data_dir());
 

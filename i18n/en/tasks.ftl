@@ -2,22 +2,26 @@ tasks = Tasks
 favorites = Favorites
 trash = Trash
 empty-trash = Empty trash
+empty-trash-confirm = All tasks in the trash will be permanently deleted. This action cannot be undone.
 no-favorites = No favorites
 no-favorites-suggestion = Mark tasks as favorites to see them here
 no-trash = Trash is empty
 no-trash-suggestion = Deleted tasks will appear here
 restore = Restore
 restore-all = Restore all
+restore-list = Restore list
 delete-permanently = Delete permanently
 deleted-from = Deleted from "{ $list }"
 deleted-at = Deleted { $date }
 unknown-list = Unknown list
 trash-emptied = Trash emptied
+list = List
 about = About
 
 # Content
 add-new-task = Add new task
 search-tasks = Search tasks
+search-list = Search { $list }
 
 # Details
 title = Title
@@ -54,11 +58,17 @@ delete-list-confirm = Are you sure you want to delete "{ $name }"?
 # Deletion undo banner
 undo = Undo
 task-deleted = "{ $title }" deleted
+task-moved-to-trash = "{ $title }" moved to trash
+list-moved-to-trash = "{ $title }" moved to trash
 deletion-countdown = { $seconds }s
 
 # Delete Task Dialog
 delete-task = The selected task is about to be deleted
 delete-task-confirm = Are you sure you want to delete this task?
+delete-task-permanently = Delete task permanently
+delete-task-permanently-confirm = Are you sure you want to permanently delete "{ $title }"? This action cannot be undone.
+delete-list-permanently = Delete list permanently
+delete-list-permanently-confirm = Are you sure you want to permanently delete "{ $name }" and all of its tasks? This action cannot be undone.
 
 # Icon Dialog
 icon = Set icon
@@ -96,6 +106,8 @@ settings = Settings
 ### Appearance
 appearance = Appearance
 show-favorites = Show favorites
+show-trash = Show trash
+sort-lists-by = Sort lists by
 theme = Theme
 match-desktop = Match desktop
 dark = Dark

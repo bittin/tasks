@@ -1,9 +1,5 @@
-pub mod core;
-pub mod dialogs;
-pub mod navigation;
-pub mod ui;
-
-pub use core::{AppModel, ContextPage, Flags, Message};
+pub use crate::shared::navigation::core::{AppModel, ContextPage, Flags, Message};
+use std::collections::HashMap;
 
 use cosmic::{
     app::{self, Core},
@@ -13,15 +9,19 @@ use cosmic::{
 };
 
 use crate::{
-    app::{
-        dialogs::{DialogAction, DialogPage},
-        ui::ApplicationAction,
-    },
     config::AppConfig,
+    features::{
+        favorites::{self, FavoritesMarker},
+        lists::{content, List},
+        reminders::reminder,
+        tasks::{self, details},
+        trash::{self, TrashMarker},
+    },
     fl,
-    model::List,
-    pages::{content, details, favorites, trash},
-    services::reminder,
+    shared::{
+        dialogs::{DialogAction, DialogPage},
+        navigation::{nav::NavMenuAction, ui},
+    },
 };
 
 impl Application for AppModel {
@@ -55,7 +55,7 @@ impl Application for AppModel {
             )
             .title(self.context_page.title()),
             ContextPage::Settings => app::context_drawer::context_drawer(
-                ui::views::settings(self),
+                crate::features::settings::views::settings(self),
                 Message::ToggleContextDrawer,
             )
             .title(self.context_page.title()),
@@ -77,17 +77,74 @@ impl Application for AppModel {
         vec![ui::menu::menu_bar(&self)]
     }
 
-    fn nav_context_menu(
-        &self,
-        id: widget::nav_bar::Id,
-    ) -> Option<Vec<widget::menu::Tree<cosmic::Action<Self::Message>>>> {
-        if self.nav.data::<crate::model::FavoritesMarker>(id).is_some() {
-            return None;
-        }
-        if self.nav.data::<crate::model::TrashMarker>(id).is_some() {
-            return navigation::trash_context_menu();
-        }
-        navigation::nav_context_menu(id)
+    fn nav_context_menu(&self) -> Option<Vec<widget::menu::Tree<cosmic::Action<Self::Message>>>> {
+        let items = self.nav.iter().map(|entity| {
+            let favorites_index_opt = self.nav.data::<FavoritesMarker>(entity);
+            let trash_index_opt = self.nav.data::<TrashMarker>(entity);
+            let mut items: Vec<widget::menu::Item<NavMenuAction, String>> = Vec::with_capacity(7);
+
+            if trash_index_opt.is_some() {
+                items.push(cosmic::widget::menu::Item::Button(
+                    fl!("restore-all"),
+                    Some(
+                        widget::icon::from_name("edit-undo-symbolic")
+                            .size(14)
+                            .handle(),
+                    ),
+                    NavMenuAction::TrashRestoreAll,
+                ));
+                items.push(cosmic::widget::menu::Item::Button(
+                    fl!("empty-trash"),
+                    Some(
+                        widget::icon::from_name("user-trash-full-symbolic")
+                            .size(14)
+                            .handle(),
+                    ),
+                    NavMenuAction::TrashEmptyAll,
+                ));
+            } else if favorites_index_opt.is_some() {
+                return items;
+            } else {
+                items.push(cosmic::widget::menu::Item::Button(
+                    fl!("rename"),
+                    Some(widget::icon::from_name("edit-symbolic").size(14).handle()),
+                    NavMenuAction::Rename(entity),
+                ));
+                items.push(cosmic::widget::menu::Item::Button(
+                    fl!("icon"),
+                    Some(
+                        widget::icon::from_name("face-smile-big-symbolic")
+                            .size(14)
+                            .handle(),
+                    ),
+                    NavMenuAction::SetIcon(entity),
+                ));
+                items.push(cosmic::widget::menu::Item::Button(
+                    fl!("export"),
+                    Some(
+                        widget::icon::from_name("emblem-shared-symbolic")
+                            .size(18)
+                            .handle(),
+                    ),
+                    NavMenuAction::Export(entity),
+                ));
+                items.push(cosmic::widget::menu::Item::Button(
+                    fl!("delete"),
+                    Some(
+                        widget::icon::from_name("user-trash-full-symbolic")
+                            .size(14)
+                            .handle(),
+                    ),
+                    NavMenuAction::Delete(entity),
+                ));
+            }
+            items
+        });
+
+        Some(cosmic::widget::menu::nav_context(
+            &HashMap::new(),
+            items.collect(),
+        ))
     }
 
     fn nav_model(&self) -> Option<&widget::segmented_button::SingleSelectModel> {
@@ -108,29 +165,24 @@ impl Application for AppModel {
         let mut tasks = vec![];
         self.nav.activate(entity);
 
-        // Check if favorites was selected
-        if self
-            .nav
-            .data::<crate::model::FavoritesMarker>(entity)
-            .is_some()
-        {
+        if self.nav.data::<FavoritesMarker>(entity).is_some() {
             let _ = self.update(Message::Content(content::Message::SetList(None)));
-            return self.update(Message::Favorites(favorites::Message::Load));
+            return self.update(Message::Favorites(favorites::favorites::Message::Load));
         }
 
-        // Check if trash was selected
-        if self.nav.data::<crate::model::TrashMarker>(entity).is_some() {
-            // Clear the content selection so that switching back to any list
-            // (including the same one) always triggers a fresh task reload.
+        if self.nav.data::<TrashMarker>(entity).is_some() {
             return app::Task::batch(vec![
                 self.update(Message::Content(content::Message::SetList(None))),
-                self.update(Message::Trash(trash::Message::Load)),
+                self.update(Message::Trash(trash::trash::Message::Load)),
             ]);
         }
 
         let location_opt = self.nav.data::<List>(entity);
 
         if let Some(list) = location_opt {
+            if let Err(err) = self.config.set_last_list_id(&self.handler, Some(list.id)) {
+                tracing::error!("{err}");
+            }
             let message = Message::Content(content::Message::SetList(Some(list.clone())));
             let window_title = format!("{} - {}", list.name, fl!("tasks"));
             if let Some(window_id) = self.core.main_window_id() {
@@ -154,30 +206,31 @@ impl Application for AppModel {
                     Message::UpdateConfig(update.config)
                 }),
             cosmic::iced::event::listen_with(|event, _status, _window_id| match event {
-                Event::Keyboard(KeyEvent::KeyPressed { key, modifiers, .. }) => {
-                    Some(Message::Application(ApplicationAction::Key(modifiers, key)))
-                }
+                Event::Keyboard(KeyEvent::KeyPressed { key, modifiers, .. }) => Some(
+                    Message::Application(ui::ApplicationAction::Key(modifiers, key)),
+                ),
                 Event::Keyboard(KeyEvent::ModifiersChanged(modifiers)) => Some(
-                    Message::Application(ApplicationAction::Modifiers(modifiers)),
+                    Message::Application(ui::ApplicationAction::Modifiers(modifiers)),
                 ),
                 _ => None,
             }),
         ];
 
-        // Tick the trash deletion countdown once per second while a task is pending.
         if self.trash.has_pending_deletion() {
             subscriptions.push(
                 cosmic::iced::time::every(std::time::Duration::from_secs(1))
-                    .map(|_| Message::Trash(trash::Message::TaskDeletionTick)),
+                    .map(|_| Message::Trash(trash::trash::Message::TaskDeletionTick)),
             );
         }
 
-        // Reminder subscription: ticks every 30 s so the update handler can
-        // scan tasks and fire desktop notifications for due reminders.
         subscriptions.push(
             cosmic::iced::time::every(std::time::Duration::from_secs(30))
                 .map(|_| Message::Reminder(reminder::ReminderMessage::Tick)),
         );
+
+        subscriptions.push(crate::shared::store::watcher::subscription(
+            self.store.base_dir().to_path_buf(),
+        ));
 
         Subscription::batch(subscriptions)
     }
@@ -200,10 +253,7 @@ impl Application for AppModel {
                     match output {
                         content::Output::Focus(id) => return cosmic::widget::text_input::focus(id),
                         content::Output::OpenTaskDetails(key, id) => {
-                            let Some(list_id) = self
-                                .nav
-                                .active_data::<crate::model::List>()
-                                .map(|list| list.id)
+                            let Some(list_id) = self.nav.active_data::<List>().map(|list| list.id)
                             else {
                                 tracing::error!("No active list found for task details");
                                 return app::Task::none();
@@ -211,7 +261,7 @@ impl Application for AppModel {
 
                             let task = self.store.tasks(list_id).get(id).unwrap_or_else(|err| {
                                 tracing::error!("Failed to load task details: {err}");
-                                crate::model::Task::default()
+                                tasks::task::Task::default()
                             });
 
                             let tasks = vec![
@@ -224,20 +274,38 @@ impl Application for AppModel {
                             ];
                             return app::Task::batch(tasks);
                         }
-                        content::Output::TaskDeleted => {
-                            // Close the task-details drawer if it is open.
+                        content::Output::TaskDeleted {
+                            task_id,
+                            list_id,
+                            title,
+                        } => {
+                            let mut tasks = vec![
+                                cosmic::task::message(Message::Trash(trash::trash::Message::Load)),
+                                self.toasts
+                                    .push(
+                                        widget::Toast::new(fl!(
+                                            "task-moved-to-trash",
+                                            title = title.as_str()
+                                        ))
+                                        .action(
+                                            fl!("undo"),
+                                            move |_id| {
+                                                Message::Content(content::Message::RestoreTask(
+                                                    task_id, list_id,
+                                                ))
+                                            },
+                                        ),
+                                    )
+                                    .map(cosmic::Action::App),
+                            ];
                             if self.core.window.show_context
                                 && self.context_page == ContextPage::TaskDetails
                             {
-                                return cosmic::task::message(Message::ToggleContextPage(
+                                tasks.push(cosmic::task::message(Message::ToggleContextPage(
                                     ContextPage::TaskDetails,
-                                ));
+                                )));
                             }
-                        }
-                        content::Output::ToggleHideCompleted(list) => {
-                            if let Some(data) = self.nav.active_data_mut::<crate::model::List>() {
-                                data.hide_completed = list.hide_completed;
-                            }
+                            return app::Task::batch(tasks);
                         }
                     }
                 }
@@ -246,8 +314,6 @@ impl Application for AppModel {
                 if let Some(output) = self.details.update(message) {
                     match output {
                         details::Output::DeleteTask(key) => {
-                            // Route to content's undo-timer flow and close the
-                            // details drawer immediately.
                             let mut tasks: Vec<cosmic::Task<Message>> =
                                 vec![cosmic::task::message(Message::Content(
                                     content::Message::OpenTaskDeletionDialog(key),
@@ -301,10 +367,53 @@ impl Application for AppModel {
                 }
             }
             Message::Trash(msg) => {
-                self.trash.update(msg);
+                let output = self.trash.update(msg);
+                self.refresh_trash_nav_icon();
+                match output {
+                    Some(trash::trash::Output::EmptyTrashRequested) => {
+                        return cosmic::task::message(Message::Dialog(DialogAction::Open(
+                            DialogPage::EmptyTrash,
+                        )));
+                    }
+                    Some(trash::trash::Output::DeleteTaskRequested(task_id, title)) => {
+                        return cosmic::task::message(Message::Dialog(DialogAction::Open(
+                            DialogPage::DeleteTaskPermanently(task_id, title),
+                        )));
+                    }
+                    Some(trash::trash::Output::RestoreListRequested(list_id)) => {
+                        return cosmic::task::message(Message::Tasks(
+                            crate::shared::navigation::nav::TasksAction::RestoreList(list_id),
+                        ));
+                    }
+                    Some(trash::trash::Output::DeleteListRequested(list_id, title)) => {
+                        return cosmic::task::message(Message::Dialog(DialogAction::Open(
+                            DialogPage::DeleteListPermanently(list_id, title),
+                        )));
+                    }
+                    Some(trash::trash::Output::RestoreTaskFromListRequested(list_id, task_id)) => {
+                        return cosmic::task::message(Message::Tasks(
+                            crate::shared::navigation::nav::TasksAction::RestoreTaskFromList(
+                                list_id, task_id,
+                            ),
+                        ));
+                    }
+                    Some(trash::trash::Output::DeleteTaskFromListRequested(
+                        list_id,
+                        task_id,
+                        title,
+                    )) => {
+                        return cosmic::task::message(Message::Dialog(DialogAction::Open(
+                            DialogPage::DeleteTaskFromListPermanently(list_id, task_id, title),
+                        )));
+                    }
+                    None => {}
+                }
+            }
+            Message::CloseToast(id) => {
+                self.toasts.remove(id);
             }
             Message::Reminder(msg) => {
-                use crate::services::reminder::ReminderMessage;
+                use crate::features::reminders::reminder::ReminderMessage;
                 match msg {
                     ReminderMessage::Tick => {
                         let now = jiff::Timestamp::now();
@@ -326,12 +435,9 @@ impl Application for AppModel {
             Message::Favorites(msg) => {
                 if let Some(output) = self.favorites.update(msg) {
                     match output {
-                        favorites::Output::OpenTask { task, list_id } => {
-                            // Find the nav entity for this list and activate it.
+                        favorites::favorites::Output::OpenTask { task, list_id } => {
                             let entity = self.nav.iter().find(|e| {
-                                self.nav
-                                    .data::<crate::model::List>(*e)
-                                    .is_some_and(|l| l.id == list_id)
+                                self.nav.data::<List>(*e).is_some_and(|l| l.id == list_id)
                             });
                             let Some(entity) = entity else {
                                 tracing::error!("Nav entity not found for list {list_id}");
@@ -343,7 +449,7 @@ impl Application for AppModel {
                                 Message::ToggleContextPage(ContextPage::TaskDetails),
                             )];
 
-                            if let Some(list) = self.nav.data::<crate::model::List>(entity) {
+                            if let Some(list) = self.nav.data::<List>(entity) {
                                 tasks.push(self.update(Message::Content(
                                     content::Message::SetList(Some(list.clone())),
                                 )));
@@ -395,20 +501,14 @@ impl Application for AppModel {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        if self
-            .nav
-            .active_data::<crate::model::TrashMarker>()
-            .is_some()
-        {
+        let content = if self.nav.active_data::<TrashMarker>().is_some() {
             self.trash.view().map(Message::Trash)
-        } else if self
-            .nav
-            .active_data::<crate::model::FavoritesMarker>()
-            .is_some()
-        {
+        } else if self.nav.active_data::<FavoritesMarker>().is_some() {
             self.favorites.view().map(Message::Favorites)
         } else {
             self.content.view().map(Message::Content)
-        }
+        };
+
+        widget::toaster(&self.toasts, content)
     }
 }
